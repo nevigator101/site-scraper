@@ -113,6 +113,17 @@ def test_background_images_from_style_blocks_lazy_attrs_builders_and_posters():
     }
 
 
+def test_images_in_json_data_attributes_such_as_woocommerce_variations():
+    variations = (
+        '[{"attributes":{"attribute_colour":"Silver"},'
+        '"image":{"full_src":"https:\\/\\/acme-plumbing.test\\/img\\/silver.webp"}}]'
+    )
+    soup = soup_of(f"<form data-product_variations='{variations}'></form>")
+    (image,) = extract.images(soup, BASE)
+    assert image["url"] == BASE + "img/silver.webp"
+    assert image["kind"] == "data_attribute"
+
+
 def test_css_urls_resolve_against_the_stylesheet_and_skip_fonts():
     css = """@import "parts/extra.css"; .a{background:url(../img/a.png) no-repeat}
     .b{background:url("data:image/png;base64,xx")} @font-face{src:url(f.woff2) format("woff2")}"""

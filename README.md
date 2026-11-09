@@ -45,8 +45,8 @@ make scrape URL=https://old-client-site.co.za       # macOS / Linux
    so JavaScript-built sites (Wix, Squarespace, React) work. Lazy-loaded content is scrolled in.
 3. Reads facts from each page's HTML: metadata, JSON-LD, contact details, menu, forms,
    third-party scripts, images. Background images are read from `style` attributes,
-   `<style>` blocks, lazy-load attributes (`data-bg`, `data-background`…), page-builder settings
-   (Elementor slideshows) and video posters.
+   `<style>` blocks, lazy-load attributes (`data-bg`, `data-background`…), JSON in `data-*`
+   attributes (Elementor slideshows, WooCommerce variation photos) and video posters.
 4. Fetches the site's own stylesheets (following `@import`) and adds the images they use.
    Page builders such as Elementor and Divi keep hero backgrounds there
    (`/wp-content/uploads/elementor/css/post-N.css`), not in the HTML. REPORT.md lists them under

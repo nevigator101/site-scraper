@@ -593,13 +593,21 @@ def images(soup: BeautifulSoup, url: str) -> list[dict]:
             value = str(node[attr])
             for match in css_urls(value, url) if "url(" in value else [value]:
                 add(match, "", "background")
-    for node in soup.find_all(attrs={"data-settings": True}):  # Elementor slideshows
-        try:
-            settings = json.loads(str(node["data-settings"]))
-        except (json.JSONDecodeError, TypeError):
-            continue
-        for match in _image_strings(settings):
-            add(match, "", "background")
+    # JSON in data-* attributes: Elementor slideshows (data-settings, used as backgrounds),
+    # WooCommerce variation photos (data-product_variations), slider plugins.
+    for node in soup.find_all(True):
+        for attr, value in node.attrs.items():
+            if not attr.startswith("data-") or not isinstance(value, str):
+                continue
+            if value.lstrip()[:1] not in ("{", "["):
+                continue
+            try:
+                data = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            kind = "background" if attr == "data-settings" else "data_attribute"
+            for match in _image_strings(data):
+                add(match, "", kind)
     for video in soup.find_all("video", poster=True):
         add(str(video["poster"]), "", "video_poster")
     og = _meta(soup, "og:image")
