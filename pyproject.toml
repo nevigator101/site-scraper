@@ -1,0 +1,30 @@
+[project]
+name = "site-scraper"
+version = "0.1.0"
+description = "Crawl an existing website and turn it into a rebuild kit: Markdown, screenshots, images, URL inventory, draft redirects, brand tokens and business details."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13,<3.14"
+# Dependencies are locked with hashes in requirements.txt (pip-tools). Run it with Docker.
+
+[project.scripts]
+site-scraper = "site_scraper.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["output", "tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "S", "BLE"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S104", "S310", "E501"]
+"site_scraper/brand.py" = ["E501"]  # the embedded JavaScript
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-p no:cacheprovider"
+markers = ["e2e: runs a real browser crawl against the fixture site"]

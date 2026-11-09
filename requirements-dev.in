@@ -1,0 +1,5 @@
+# Test and lint tools. Installed in the `test` image only.
+-c requirements.txt
+pytest
+pytest-asyncio
+ruff

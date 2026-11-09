@@ -1,0 +1,24 @@
+# docker compose run --rm scrape https://example.co.za     → output/<domain>-<date>/
+# docker compose run --rm test                              → ruff + pytest
+name: site-scraper
+
+services:
+  scrape:
+    build:
+      context: .
+      target: runtime
+    image: site-scraper:latest
+    init: true
+    shm_size: 1gb # Chromium needs more than Docker's default 64 MB of shared memory
+    volumes:
+      - ./output:/app/output
+
+  test:
+    build:
+      context: .
+      target: test
+    image: site-scraper:test
+    init: true
+    shm_size: 1gb
+    volumes:
+      - .:/app

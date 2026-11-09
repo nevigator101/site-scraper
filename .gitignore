@@ -1,0 +1,16 @@
+# Scraped sites: may hold personal data (names, photos, contact details). Never commit.
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

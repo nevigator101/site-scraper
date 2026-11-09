@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en-ZA">
+<head>
+  <meta charset="utf-8">
+  <title>Contact us | Acme Plumbing</title>
+  <meta name="description" content="Call, WhatsApp or email Acme Plumbing.">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header><nav><ul><li><a href="/">Home</a></li><li><a href="/contact.html">Contact</a></li></ul></nav></header>
+  <main>
+    <h1>Contact us</h1>
+    <form action="/send.php" method="post">
+      <label for="name">Your name</label><input id="name" name="name" required>
+      <label for="email">Email</label><input id="email" name="email" type="email" required>
+      <label>Message <textarea name="message"></textarea></label>
+      <button type="submit">Send</button>
+    </form>
+    <iframe src="https://www.google.com/maps/embed?pb=abc" title="Map"></iframe>
+    <p>Phone 011 555 0100. <a href="/missing-page/">Old specials page</a></p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,8 @@
+:root { --brand: #0a5cad; --accent: #f28c28; }
+body { font-family: Georgia, serif; color: #222222; background: #ffffff; margin: 0; }
+h1 { font-family: Arial, sans-serif; color: #0a5cad; }
+header { background: #0a5cad; padding: 1rem; }
+header a { color: #ffffff; }
+a { color: #0a5cad; }
+a.button { display: inline-block; background: #f28c28; color: #ffffff; padding: 0.75rem 1.5rem; }
+footer { background: #f4f4f4; padding: 2rem; }
