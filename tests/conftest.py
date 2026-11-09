@@ -33,6 +33,8 @@ def fixture_site(tmp_path_factory) -> str:
     _png(root / "img" / "hero.png", (1600, 900), (242, 140, 40))
     _png(root / "img" / "team.png", (800, 600), (34, 34, 34))
     _png(root / "img" / "favicon.png", (32, 32), (10, 92, 173))
+    _png(root / "img" / "bg-hero.png", (1920, 800), (20, 40, 60))  # only in style.css
+    _png(root / "img" / "bg-band.png", (1200, 400), (60, 40, 20))  # only in extra.css (@import)
     (root / "files").mkdir()
     (root / "files" / "price-list.pdf").write_bytes(b"%PDF-1.4\n%fixture\n")
 

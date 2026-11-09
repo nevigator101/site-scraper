@@ -30,7 +30,7 @@ make scrape URL=https://old-client-site.co.za       # macOS / Linux
 | `screenshots/<slug>-mobile.png` | Full-page screenshot at 390 px, home and main-menu pages | Mobile layout reference |
 | `inventory.csv` | Every URL: status, redirect, title, meta description, H1, canonical, word count, inlinks, depth, how it was found, suggested new path | SEO baseline, content audit |
 | `redirects.csv` | `old_path → new_path` draft, with confidence. Blank `new_path` = a person decides | Your 301 redirect map |
-| `images/` + `images.csv` | Images at the best available resolution (Wix, Squarespace, Shopify and WordPress resized copies are swapped for the original), with alt text, size, and the pages each is used on | Re-uploading images, fixing missing alt text |
+| `images/` + `images.csv` | Images at the best available resolution (Wix, Squarespace, Shopify and WordPress resized copies are swapped for the original), with alt text, size, how each is used (`img`, `background`, `css_background`, `video_poster`, `icon`…), where a linked image points (`links_to`), and the pages each is used on | Re-uploading images, fixing missing alt text |
 | `files/` | PDFs and office documents linked from the site | Price lists, menus, brochures |
 | `brand.json` | Suggested tokens (background, text, heading, accent, link, button, header, footer, body/heading fonts), most-used colours, CSS custom properties, @font-face rules, web-font links, logo candidates, inline SVG logo | CSS design tokens |
 | `business.json` | Name, address, hours, phones, emails, WhatsApp, social profiles (from JSON-LD and the pages), main menu tree, forms and their fields, analytics IDs, embeds, external hosts | Site settings, contact page, Content Security Policy |
@@ -44,11 +44,17 @@ make scrape URL=https://old-client-site.co.za       # macOS / Linux
    about. Each page is rendered in headless Chromium through [Crawl4AI](https://github.com/unclecode/crawl4ai),
    so JavaScript-built sites (Wix, Squarespace, React) work. Lazy-loaded content is scrolled in.
 3. Reads facts from each page's HTML: metadata, JSON-LD, contact details, menu, forms,
-   third-party scripts, images.
-4. Opens the home, about and contact pages again in Playwright to read computed colours and
+   third-party scripts, images. Background images are read from `style` attributes,
+   `<style>` blocks, lazy-load attributes (`data-bg`, `data-background`…), page-builder settings
+   (Elementor slideshows) and video posters.
+4. Fetches the site's own stylesheets (following `@import`) and adds the images they use.
+   Page builders such as Elementor and Divi keep hero backgrounds there
+   (`/wp-content/uploads/elementor/css/post-N.css`), not in the HTML. REPORT.md lists them under
+   "Background images".
+5. Opens the home, about and contact pages again in Playwright to read computed colours and
    fonts, and takes the mobile screenshots.
-5. Downloads images and documents, removing duplicates by content hash.
-6. Writes the kit.
+6. Downloads images and documents, removing duplicates by content hash.
+7. Writes the kit.
 
 ### Suggested new paths
 
@@ -113,6 +119,9 @@ re-encoded and stripped of metadata (EXIF, GPS), rather than copying the files i
 
 - Pages behind a login, and content that only appears after a click (tabs, "load more" buttons)
   are not captured. Infinite scroll is captured as far as the page scroll reaches.
+- Images that only JavaScript knows about (some sliders), stylesheets on other hosts (CDNs) and
+  images inside inline SVG are not downloaded. Always compare the screenshots with `images/`
+  (REPORT.md "Next steps") and fetch anything missing from `pages/*.html` by hand.
 - Sites behind an aggressive bot wall (Cloudflare challenge pages) may report pages as blocked.
   Ask the client to allow-list your IP, or to give you an export from their platform.
 - Brand tokens are read from computed styles. They are a starting point: check them against the

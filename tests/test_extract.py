@@ -92,6 +92,55 @@ def test_srcset_picks_largest():
     assert extract.images(soup, BASE)[0]["url"] == "https://acme-plumbing.test/b.jpg"
 
 
+def test_background_images_from_style_blocks_lazy_attrs_builders_and_posters():
+    soup = soup_of(
+        """<style>.hero{background-image:url('/img/hero-bg.jpg')}
+        @font-face{src:url(/fonts/a.woff2)} /* url(/img/commented-out.png) */</style>
+        <section style="--bg: url(&quot;/img/inline.png&quot;)"></section>
+        <div data-bg="/img/lazy.jpg"></div>
+        <div data-background-image="url(/img/lazy2.webp)"></div>
+        <div data-settings='{"background_slideshow_gallery":[{"id":1,"url":"https:\\/\\/acme-plumbing.test\\/img\\/slide.jpg"}]}'></div>
+        <video poster="/img/poster.jpg"></video>"""
+    )
+    found = {i["url"].removeprefix(BASE): i["kind"] for i in extract.images(soup, BASE)}
+    assert found == {
+        "img/hero-bg.jpg": "css_background",
+        "img/inline.png": "background",
+        "img/lazy.jpg": "background",
+        "img/lazy2.webp": "background",
+        "img/slide.jpg": "background",
+        "img/poster.jpg": "video_poster",
+    }
+
+
+def test_css_urls_resolve_against_the_stylesheet_and_skip_fonts():
+    css = """@import "parts/extra.css"; .a{background:url(../img/a.png) no-repeat}
+    .b{background:url("data:image/png;base64,xx")} @font-face{src:url(f.woff2) format("woff2")}"""
+    sheet = "https://x.co.za/wp-content/themes/t/css/style.css?ver=2"
+    assert extract.css_urls(css, sheet) == ["https://x.co.za/wp-content/themes/t/img/a.png"]
+    assert extract.css_imports(css, sheet) == [
+        "https://x.co.za/wp-content/themes/t/css/parts/extra.css"
+    ]
+
+
+def test_framework_assets_are_told_apart_from_site_images():
+    assert extract.is_framework_asset("https://x.co.za/wp-content/plugins/woocommerce/a/visa.svg")
+    assert extract.is_framework_asset("https://x.co.za/wp-includes/images/spinner.gif")
+    assert not extract.is_framework_asset("https://x.co.za/wp-content/uploads/2025/12/Hero.png")
+    assert not extract.is_framework_asset("https://x.co.za/assets/hero.jpg")
+
+
+def test_stylesheets_and_image_links():
+    soup = soup_of(
+        """<link rel="stylesheet" href="/a.css"><link rel="preload" as="style" href="/b.css">
+        <link rel="icon" href="/i.png">
+        <a href="https://partner.test/"><img src="/logos/p.png" alt="Partner"></a>"""
+    )
+    assert extract.stylesheets(soup, BASE) == [BASE + "a.css", BASE + "b.css"]
+    logo = next(i for i in extract.images(soup, BASE) if i["url"].endswith("p.png"))
+    assert logo["links_to"] == "https://partner.test/"
+
+
 def test_documents():
     docs = extract.documents(HOME, BASE)
     assert docs == [

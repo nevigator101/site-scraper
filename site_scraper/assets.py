@@ -79,6 +79,7 @@ class Asset:
     error: str = ""
     missing_alt_on: list[str] = field(default_factory=list)
     roles: list[str] = field(default_factory=list)
+    links_to: str = ""
 
 
 def _file_name(url: str, content_type: str, kind: str) -> str:

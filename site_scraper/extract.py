@@ -461,7 +461,72 @@ def detect_platform(html: str, generator: str = "", headers: dict | None = None)
 
 # ---- Images -------------------------------------------------------------------------------------
 
-_BG_URL_RE = re.compile(r"url\(\s*['\"]?([^'\")]+)['\"]?\s*\)")
+CSS_URL_RE = re.compile(r"""url\(\s*(['"]?)(.*?)\1\s*\)""", re.I | re.S)
+CSS_IMPORT_RE = re.compile(r"""@import\s+(?:url\(\s*)?['"]?([^'")\s;]+)""", re.I)
+CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
+NOT_IMAGE_EXTENSIONS = {".woff", ".woff2", ".ttf", ".otf", ".eot", ".css", ".htc", ".js"}
+# Lazy-load plugins and page builders keep background images in these until JavaScript runs.
+BACKGROUND_DATA_ATTRS = (
+    "data-bg",
+    "data-bg-image",
+    "data-background",
+    "data-background-image",
+    "data-lazy-background",
+    "data-image-src",
+)
+# Theme, plugin and core assets (icons, spinners, card logos): reported apart from site images.
+FRAMEWORK_PATH_RE = re.compile(r"/wp-content/(plugins|themes)/|/wp-includes/", re.I)
+
+
+def is_framework_asset(url: str) -> bool:
+    return bool(FRAMEWORK_PATH_RE.search(urlsplit(url).path))
+
+
+def css_urls(css: str, base: str) -> list[str]:
+    """Absolute URLs of the images a piece of CSS uses through url(). Fonts and data: skipped."""
+    from site_scraper.urls import extension
+
+    found = []
+    for _, raw in CSS_URL_RE.findall(CSS_COMMENT_RE.sub("", css or "")):
+        raw = raw.strip()
+        if not raw or raw.startswith(("data:", "#")):
+            continue
+        absolute = normalize(raw, base)
+        if absolute and extension(absolute) not in NOT_IMAGE_EXTENSIONS:
+            found.append(absolute)
+    return list(dict.fromkeys(found))
+
+
+def css_imports(css: str, base: str) -> list[str]:
+    """Stylesheets pulled in with @import."""
+    found = (normalize(m, base) for m in CSS_IMPORT_RE.findall(CSS_COMMENT_RE.sub("", css or "")))
+    return list(dict.fromkeys(u for u in found if u))
+
+
+def stylesheets(soup: BeautifulSoup, url: str) -> list[str]:
+    """Linked stylesheets (rel=stylesheet, or preloaded as style), in page order."""
+    found = []
+    for link in soup.find_all("link", href=True):
+        rel = " ".join(link.get("rel", [])).lower()
+        if "stylesheet" in rel or ("preload" in rel and link.get("as") == "style"):
+            absolute = normalize(str(link["href"]), url)
+            if absolute:
+                found.append(absolute)
+    return list(dict.fromkeys(found))
+
+
+def _image_strings(data) -> Iterable[str]:
+    """Every string in parsed JSON that looks like an image URL (page-builder settings)."""
+    from site_scraper.urls import IMAGE_EXTENSIONS, extension
+
+    if isinstance(data, dict):
+        for value in data.values():
+            yield from _image_strings(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from _image_strings(value)
+    elif isinstance(data, str) and extension(data.split("?")[0]) in IMAGE_EXTENSIONS:
+        yield data
 
 
 def _largest_from_srcset(srcset: str) -> str:
@@ -482,36 +547,61 @@ def _largest_from_srcset(srcset: str) -> str:
 
 
 def images(soup: BeautifulSoup, url: str) -> list[dict]:
-    """Images on the page: <img>, <picture> sources, inline background images, og:image, icons."""
+    """Images on the page: <img>, <picture> sources, background images (style attributes,
+    <style> blocks, lazy-load data attributes, page-builder settings), video posters, og:image
+    and icons. Images in linked stylesheets are added later from the fetched CSS (styles.py)."""
     found: dict[str, dict] = {}
 
-    def add(src: str | None, alt: str | None, kind: str) -> None:
+    def add(src: str | None, alt: str | None, kind: str) -> dict | None:
+        src = (src or "").strip()
         if not src or src.startswith("data:"):
-            return
+            return None
         absolute = normalize(src, url)
         if not absolute:
-            return
+            return None
         entry = found.setdefault(absolute, {"url": absolute, "alt": "", "kind": kind})
         if alt and not entry["alt"]:
             entry["alt"] = " ".join(alt.split())
+        return entry
 
     for img in soup.find_all("img"):
         alt = img.get("alt")
         srcset = img.get("srcset") or img.get("data-srcset")
         src = _largest_from_srcset(srcset) if srcset else ""
         src = src or img.get("data-src") or img.get("data-lazy-src") or img.get("src")
-        add(src, alt, "img")
-        if alt is None and src:
-            entry = found.get(normalize(src, url) or "")
-            if entry is not None:
-                entry["missing_alt"] = True
+        entry = add(src, alt, "img")
+        if entry is None:
+            continue
+        if alt is None:
+            entry["missing_alt"] = True
+        link = img.find_parent("a", href=True)
+        target = normalize(str(link["href"]), url) if link else None
+        if target and not entry.get("links_to"):
+            entry["links_to"] = target  # logo strips and carousels: where each image points
     for source in soup.find_all("source"):
         srcset = source.get("srcset") or source.get("data-srcset")
         if srcset and "image" in source.get("type", "image"):
             add(_largest_from_srcset(srcset), "", "picture")
     for node in soup.find_all(style=True):
-        for match in _BG_URL_RE.findall(str(node["style"])):
+        for match in css_urls(str(node["style"]), url):
             add(match, "", "background")
+    for style in soup.find_all("style"):
+        for match in css_urls(style.get_text(), url):
+            add(match, "", "css_background")
+    for attr in BACKGROUND_DATA_ATTRS:
+        for node in soup.find_all(attrs={attr: True}):
+            value = str(node[attr])
+            for match in css_urls(value, url) if "url(" in value else [value]:
+                add(match, "", "background")
+    for node in soup.find_all(attrs={"data-settings": True}):  # Elementor slideshows
+        try:
+            settings = json.loads(str(node["data-settings"]))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for match in _image_strings(settings):
+            add(match, "", "background")
+    for video in soup.find_all("video", poster=True):
+        add(str(video["poster"]), "", "video_poster")
     og = _meta(soup, "og:image")
     add(og, "", "og_image")
     for link in soup.find_all("link", href=True):

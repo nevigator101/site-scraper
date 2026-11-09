@@ -19,6 +19,7 @@ from site_scraper.extract import (
     emails,
     forms,
     images,
+    is_framework_asset,
     jsonld,
     jsonld_types,
     links,
@@ -27,6 +28,7 @@ from site_scraper.extract import (
     phones,
     social_links,
     soup_of,
+    stylesheets,
     third_party,
     whatsapp,
 )
@@ -85,6 +87,7 @@ def analyse(crawl: CrawlResult) -> dict:
             "word_count": 0,
             "jsonld_types": [],
             "images": [],
+            "stylesheets": [],
             "forms": [],
         }
         if page.ok and page.html and same_site(base, crawl.root):
@@ -97,6 +100,7 @@ def analyse(crawl: CrawlResult) -> dict:
                 word_count=word_count(page.markdown),
                 jsonld_types=sorted(types),
                 images=images(soup, base),
+                stylesheets=stylesheets(soup, base),
                 forms=forms(soup, base),
             )
             for link in links(soup, base):
@@ -154,6 +158,25 @@ def analyse(crawl: CrawlResult) -> dict:
     }
 
 
+def all_stylesheets(site: dict) -> list[str]:
+    return list(dict.fromkeys(s for r in site["records"] for s in r.get("stylesheets", [])))
+
+
+def add_stylesheet_images(site: dict, sheet_images: dict[str, list[str]]) -> int:
+    """Add the images from each page's linked stylesheets to that page. Returns how many
+    image URLs were new to the kit."""
+    before = {i["url"] for r in site["records"] for i in r["images"]}
+    for record in site["records"]:
+        known = {i["url"] for i in record["images"]}
+        for sheet in record.get("stylesheets", []):
+            for url in sheet_images.get(sheet, []):
+                if url not in known:
+                    known.add(url)
+                    record["images"].append({"url": url, "alt": "", "kind": "css_background"})
+    after = {i["url"] for r in site["records"] for i in r["images"]}
+    return len(after - before)
+
+
 def collect_assets(site: dict, documents: list[dict]) -> list[Asset]:
     """One Asset per unique image or document URL, with every page it appears on."""
     found: dict[str, Asset] = {}
@@ -162,6 +185,8 @@ def collect_assets(site: dict, documents: list[dict]) -> list[Asset]:
             asset = found.setdefault(image["url"], Asset(url=image["url"], kind="image"))
             if image.get("alt") and not asset.alt:
                 asset.alt = image["alt"]
+            if image.get("links_to") and not asset.links_to:
+                asset.links_to = image["links_to"]
             if record["url"] not in asset.pages:
                 asset.pages.append(record["url"])
             if image.get("missing_alt"):
@@ -256,11 +281,11 @@ def write_data(out: Path, site: dict, assets: list[Asset], brand: dict, options:
     )
     _write_csv(
         out / "images.csv",
-        ["file", "alt", "width", "height", "bytes", "type", "used_as", "pages", "missing_alt_on",
-         "source_url", "downloaded_from", "error"],
+        ["file", "alt", "width", "height", "bytes", "type", "used_as", "links_to", "pages",
+         "missing_alt_on", "source_url", "downloaded_from", "error"],
         [
             [a.file, a.alt, a.width or "", a.height or "", a.bytes or "", a.content_type,
-             " ".join(a.roles), " ".join(a.pages), " ".join(a.missing_alt_on), a.url,
+             " ".join(a.roles), a.links_to, " ".join(a.pages), " ".join(a.missing_alt_on), a.url,
              a.downloaded_from, a.error]
             for a in assets
             if a.kind == "image"
@@ -502,6 +527,48 @@ def write_report(out: Path, site: dict, assets: list[Asset], brand: dict, option
             source = f" (linked from {r['found_on']})" if r["found_on"] else ""
             add(f"- `{_cell(r['path'])}`: {reason or 'failed'}{source}")
 
+    backgrounds = [
+        a
+        for a in assets
+        if a.kind == "image" and {"background", "css_background", "video_poster"} & set(a.roles)
+    ]
+    framework = [a for a in backgrounds if is_framework_asset(a.url)]
+    backgrounds = [a for a in backgrounds if a not in framework]
+    if backgrounds or framework:
+        add("")
+        add("## Background images")
+        add("")
+        add(
+            "Images used as CSS backgrounds (heroes, banners, section backgrounds), from style "
+            "attributes, `<style>` blocks, lazy-load attributes and the site's stylesheets. They "
+            "never show up as `<img>`, so they are easy to miss: match each one to the screenshots "
+            "and decide where it goes on the new site (desktop and mobile versions are common)."
+        )
+        add("")
+        if backgrounds:
+            add("| File | Size | Used on | Source |")
+            add("|---|---|---|---|")
+            for a in sorted(backgrounds, key=lambda a: (-(a.bytes or 0), a.url))[:80]:
+                size = f"{a.width}×{a.height}" if a.width else "—"
+                pages = ", ".join(f"`{path_of(p)}`" for p in a.pages[:3])
+                more = f" +{len(a.pages) - 3}" if len(a.pages) > 3 else ""
+                add(f"| `{_cell(a.file or a.error)}` | {size} | {pages}{more} | <{a.url}> |")
+        if framework:
+            add("")
+            add(
+                f"Plus {len(framework)} theme/plugin image(s) (icons, spinners, card logos from "
+                "`/wp-content/plugins/`, `/wp-content/themes/`, `/wp-includes/`): in `images.csv`, "
+                "normally not needed."
+            )
+    linked = [a for a in assets if a.kind == "image" and a.links_to]
+    external_links = [a for a in linked if not same_site(a.links_to, site["root"])]
+    if external_links:
+        add("")
+        add(
+            f"{len(external_links)} image(s) link to other sites (logo strips, partners, "
+            "carousels): see the `links_to` column in `images.csv`."
+        )
+
     if docs:
         add("")
         add("## Documents")
@@ -522,8 +589,13 @@ def write_report(out: Path, site: dict, assets: list[Asset], brand: dict, option
         "4. Upload images from `images/` through the admin, so they are converted and stripped of "
         "metadata. Add alt text where it is missing."
     )
-    add("5. Finish `redirects.csv` (every old URL needs a 301) and add it to the new site.")
-    add("6. Delete this folder when the new site is live: it can hold personal information.")
+    add(
+        "5. Check for missed assets: compare every screenshot with `images/`. Anything visible "
+        "that is not in the kit (JavaScript sliders, images that load on click, inline SVG, "
+        "video) is in `pages/*.html` or the CSS it links: fetch it by hand into `images/`."
+    )
+    add("6. Finish `redirects.csv` (every old URL needs a 301) and add it to the new site.")
+    add("7. Delete this folder when the new site is live: it can hold personal information.")
     text = "\n".join(L) + "\n"
     (out / "REPORT.md").write_text(text, encoding="utf-8")
     return text

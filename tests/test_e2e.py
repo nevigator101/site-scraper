@@ -111,7 +111,21 @@ async def test_images_and_documents_downloaded_and_deduped(kit):
     assert team["alt"] == "The Acme team outside the workshop"  # alt found on the about page
     assert team["missing_alt_on"].split("/", 3)[3] == ""  # only the home page lacks its alt
     assert (kit / "files" / "price-list.pdf").is_file()
-    assert len(list((kit / "images").iterdir())) == 4
+    assert len(list((kit / "images").iterdir())) == 6
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_stylesheet_background_images_are_downloaded(kit):
+    images = {Path(r["source_url"]).name: r for r in _rows(kit / "images.csv")}
+    for name, size in (("bg-hero.png", ("1920", "800")), ("bg-band.png", ("1200", "400"))):
+        row = images[name]
+        assert row["used_as"] == "css_background"
+        assert (row["width"], row["height"]) == size
+        assert (kit / row["file"]).is_file()
+    report = (kit / "REPORT.md").read_text(encoding="utf-8")
+    assert "## Background images" in report
+    assert "bg-hero.png" in report
+    assert images["logo.png"]["links_to"].endswith("/")  # the logo links home
 
 
 @pytest.mark.asyncio(loop_scope="module")

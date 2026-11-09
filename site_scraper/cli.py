@@ -17,7 +17,16 @@ from site_scraper.assets import download
 from site_scraper.brand import collect, summarise
 from site_scraper.crawl import CrawlOptions, Page, crawl
 from site_scraper.discover import Robots, fetch_robots, fetch_sitemap_urls
-from site_scraper.report import analyse, collect_assets, write_data, write_pages, write_report
+from site_scraper.report import (
+    add_stylesheet_images,
+    all_stylesheets,
+    analyse,
+    collect_assets,
+    write_data,
+    write_pages,
+    write_report,
+)
+from site_scraper.styles import stylesheet_images
 from site_scraper.urls import normalize, same_site, site_key
 
 log = logging.getLogger("site_scraper")
@@ -116,6 +125,12 @@ async def run(args: argparse.Namespace) -> Path:
             )
             per_page, _ = await collect([] if args.no_brand else brand_urls, shots, args.user_agent)
             brand = summarise(per_page)
+
+        if not args.no_images:
+            sheets = all_stylesheets(site)
+            sheet_images = await stylesheet_images(client, sheets, result.root)
+            added = add_stylesheet_images(site, sheet_images)
+            print(f"read {len(sheet_images)} stylesheet(s): {added} background image(s) found")
 
         assets = collect_assets(site, [] if args.no_files else site["documents"])
         if args.no_images:
