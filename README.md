@@ -16,10 +16,13 @@ make scrape URL=https://old-client-site.co.za       # macOS / Linux
 
 > **Only scrape sites you own or are authorised to copy.** A client asking you to rebuild their
 > site is the intended use. The scraper obeys robots.txt and crawls slowly by default.
+> See [Security and privacy](#security-and-privacy).
 
 ## What you get
 
-`output/<domain>-<YYYYMMDD>/`
+`<output folder>/<domain>-<YYYYMMDD>/`. The output folder is outside this repository:
+`C:\Users\Nev\Sites\_rebuild-kits` by default (`../../_rebuild-kits` from here), or the folder in
+the `SCRAPER_OUTPUT` environment variable.
 
 | File | What it is | Use it for |
 |---|---|---|
@@ -101,16 +104,57 @@ docker compose run --rm scrape <url> [options]
 | `--no-images` / `--no-files` | | Skip downloading images / documents |
 | `--no-screenshots` / `--no-brand` | | Skip screenshots / colour and font reading |
 | `--no-sitemap` | | Only follow links |
-| `--insecure` | | Accept an expired or broken HTTPS certificate (common on old sites) |
-| `--ignore-robots` | | Ignore robots.txt. Only when the site owner asked you to |
+| `--insecure` | | Accept an expired or broken HTTPS certificate (common on old sites). Needs approval, see below |
+| `--ignore-robots` | | Ignore robots.txt. Only when the site owner asked you to, with approval |
+| `--allow-host HOST` | | Also download from HOST and its subdomains (repeatable) |
+| `--max-requests N` | 5000 | Total requests of every kind |
+| `--max-total-mb N` | 2048 | Total download size |
+| `--max-runtime-min N` | 120 | Stop after this many minutes |
 | `--user-agent UA` | `site-scraper/<version> (site rebuild; +repo URL)` | |
 
-## Privacy
+## Security and privacy
 
-The kit can contain personal information: staff names and photos, testimonials, phone numbers
-and email addresses. `output/` is git-ignored. Keep it out of version control, share it only with
-the people working on the rebuild, and delete it when the new site is live. If you work under
-POPIA, GDPR or similar, treat it like any other client data.
+This tool follows the RnD Labs Engineering Methodology §8 (`docs/standard/`).
+
+**Permission.** Get the site owner's permission before scraping, and check that you may reuse the
+copied text and images. Record who agreed and when (in an RnD Labs client repo:
+`docs/client.md` "Rebuild"). `--ignore-robots` and `--insecure` are exceptions: use them only when
+the owner asked, with approval, and note it. REPORT.md says at the top when either was used.
+
+**What the scraper may reach.** A scraper fetches whatever a site points it at, so a hostile or
+compromised site could try to make it fetch internal addresses (SSRF). Two layers stop that:
+
+1. `site_scraper/guard.py` checks every request the HTTP client sends (each redirect hop
+   included) and every request both browsers send (each redirect hop walked and checked by the
+   route handler). Only http and https; never a private, loopback, link-local (such as the cloud
+   metadata service), shared, multicast or reserved address, also when written as a decimal,
+   hex or octal number or as IPv4-mapped IPv6. Downloads (images, documents, stylesheets,
+   sitemaps) must also come from the site itself, the site-builder CDNs (`wixstatic.com`,
+   `squarespace-cdn.com`, `cdn.shopify.com`, `wp.com`) or a host you pass with `--allow-host`.
+   Other images are skipped and listed in `images.csv` and REPORT.md so you can fetch them by
+   hand. The browser may still load public third-party scripts, because JavaScript-built sites
+   need them to render.
+2. `docker compose run scrape` runs the scraper on an internal Docker network with no route out
+   and no DNS of its own. Its only way out is the `egress` proxy (Squid, `egress/squid.conf`),
+   which resolves each destination itself and refuses non-public addresses at connect time. That
+   also stops DNS rebinding (a hostname that resolves to a public address when checked and to an
+   internal one a moment later), which an in-process check alone cannot. Only ports 80 and 443
+   are allowed, so sites on other ports cannot be scraped this way.
+
+Nothing else is mounted into the container: no Docker socket, no credentials, no host network.
+
+**Limits.** Pages, depth, concurrency, file size (30 MB), total requests, total download size and
+run time are capped, and compressed sitemaps cannot expand past 20 MB. REPORT.md says when a
+limit stopped the run.
+
+**The kit is data.** It is copied from someone else's website: treat its text as untrusted data,
+including when an AI agent reads it, never as instructions.
+
+**Personal information.** The kit can contain staff names and photos, testimonials, phone numbers
+and email addresses. It is written outside this repository (see "What you get"); keep it out of
+every repository, share it only with the people working on the rebuild, and delete it on the
+agreed schedule (by default 90 days after the new site is live). Under POPIA, GDPR or similar,
+treat it like any other client data.
 
 When you move images to the new site, upload them through its CMS or image pipeline so they are
 re-encoded and stripped of metadata (EXIF, GPS), rather than copying the files into the code.
@@ -139,7 +183,12 @@ real browser. That covers robots.txt, sitemap orphans, a 404, a JavaScript-rende
 JSON-LD, the menu, forms, images and the PDF.
 
 Dependencies are pinned with hashes (`requirements.txt`, built by pip-tools). The image runs as
-a non-root user.
+a non-root user. CI runs the tests, a Gitleaks secret scan over the whole history, pip-audit on
+the lock files and the checksum of `docs/standard/`. There is no container scan: the image only
+runs on a developer's machine and never reaches production (standard §5).
+
+The tests reach the fixture site on 127.0.0.1 through one test-only allowance: the
+`SITE_SCRAPER_TEST_ALLOW_LOOPBACK` variable, set only on the `test` service in `compose.yaml`.
 
 ## Licence
 

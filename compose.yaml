@@ -1,5 +1,14 @@
-# docker compose run --rm scrape https://example.co.za     → output/<domain>-<date>/
+# docker compose run --rm scrape https://example.co.za     → $SCRAPER_OUTPUT/<domain>-<date>/
 # docker compose run --rm test                              → ruff + pytest
+#
+# Rebuild kits can hold personal information, so they are written OUTSIDE every git repository
+# (RnD Labs standard §8): by default C:\Users\Nev\Sites\_rebuild-kits (../../_rebuild-kits from
+# this folder). Set SCRAPER_OUTPUT to choose another folder. Delete kits on the agreed schedule.
+#
+# Isolation (standard §8, README "Security and privacy"): the scraper sits on an internal network
+# with no route out and no DNS of its own. Its only way to the internet is the `egress` proxy,
+# which refuses private, loopback, link-local (cloud metadata) and other non-public addresses.
+# No Docker socket, credentials or host network are ever mounted into it.
 name: site-scraper
 
 services:
@@ -10,8 +19,19 @@ services:
     image: site-scraper:latest
     init: true
     shm_size: 1gb # Chromium needs more than Docker's default 64 MB of shared memory
+    environment:
+      SCRAPER_PROXY: http://egress:3128
+    networks: [scrape-internal]
+    depends_on: [egress]
     volumes:
-      - ./output:/app/output
+      - ${SCRAPER_OUTPUT:-../../_rebuild-kits}:/app/output
+
+  egress:
+    # Squid 6.13 (Canonical's image), pinned by digest. egress/squid.conf holds the rules.
+    image: ubuntu/squid@sha256:6a097f68bae708cedbabd6188d68c7e2e7a38cedd05a176e1cc0ba29e3bbe029
+    volumes:
+      - ./egress/squid.conf:/etc/squid/squid.conf:ro
+    networks: [scrape-internal, egress-out]
 
   test:
     build:
@@ -20,5 +40,14 @@ services:
     image: site-scraper:test
     init: true
     shm_size: 1gb
+    environment:
+      # The end-to-end test serves its fixture site on 127.0.0.1; this lets the SSRF guard
+      # reach exactly that address. Test service only, never a command-line option.
+      SITE_SCRAPER_TEST_ALLOW_LOOPBACK: "1"
     volumes:
       - .:/app
+
+networks:
+  scrape-internal:
+    internal: true # no route to the internet, the LAN or the host except through egress
+  egress-out: {}

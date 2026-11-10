@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import gzip
 import logging
+import zlib
 from dataclasses import dataclass, field
 from urllib.parse import urljoin
 from urllib.robotparser import RobotFileParser
@@ -11,12 +11,19 @@ from xml.etree import ElementTree as ET  # noqa: S405 (parsed with entity expans
 
 import httpx
 
+from site_scraper.assets import _fetch
 from site_scraper.urls import is_crawlable, normalize, same_site
 
 log = logging.getLogger(__name__)
 
 MAX_SITEMAPS = 50
 MAX_SITEMAP_BYTES = 20 * 1024 * 1024
+MAX_ROBOTS_BYTES = 512 * 1024
+
+
+def gunzip_bounded(data: bytes, limit: int = MAX_SITEMAP_BYTES) -> bytes:
+    """Decompress at most `limit` bytes: a small gzip file cannot expand into gigabytes."""
+    return zlib.decompressobj(wbits=16 + zlib.MAX_WBITS).decompress(data, limit)
 
 
 @dataclass
@@ -45,14 +52,11 @@ def parse_robots(text: str, user_agent: str) -> Robots:
 
 
 async def fetch_robots(client: httpx.AsyncClient, root: str, user_agent: str) -> Robots:
-    try:
-        response = await client.get(urljoin(root, "/robots.txt"))
-    except httpx.HTTPError as exc:
-        log.info("robots.txt not reachable: %s", exc)
+    fetched = await _fetch(client, urljoin(root, "/robots.txt"), max_bytes=MAX_ROBOTS_BYTES)
+    if fetched is None or "html" in fetched[0]:
+        log.info("robots.txt not found, too large or not reachable")
         return Robots()
-    if response.status_code >= 400 or "html" in response.headers.get("content-type", ""):
-        return Robots()
-    return parse_robots(response.text, user_agent)
+    return parse_robots(fetched[1].decode("utf-8", errors="replace"), user_agent)
 
 
 def _local(tag: str) -> str:
@@ -62,7 +66,10 @@ def _local(tag: str) -> str:
 def parse_sitemap(content: bytes) -> tuple[list[str], list[str]]:
     """Return (page URLs, child sitemap URLs) from a sitemap or sitemap index."""
     if content[:2] == b"\x1f\x8b":
-        content = gzip.decompress(content)[:MAX_SITEMAP_BYTES]
+        try:
+            content = gunzip_bounded(content)
+        except zlib.error:
+            return [], []
     if b"<!DOCTYPE" in content[:500] or b"<!ENTITY" in content:
         return [], []  # refuse DTDs: no entity expansion tricks
     try:
@@ -92,13 +99,10 @@ async def fetch_sitemap_urls(client: httpx.AsyncClient, root: str, robots: Robot
         if url in seen:
             continue
         seen.add(url)
-        try:
-            response = await client.get(url)
-        except httpx.HTTPError:
+        fetched = await _fetch(client, url, max_bytes=MAX_SITEMAP_BYTES)
+        if fetched is None:
             continue
-        if response.status_code >= 400:
-            continue
-        pages, children = parse_sitemap(response.content[:MAX_SITEMAP_BYTES])
+        pages, children = parse_sitemap(fetched[1])
         queue.extend(c for c in children if same_site(c, root))
         for page in pages:
             normalized = normalize(page)

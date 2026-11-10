@@ -24,7 +24,8 @@ from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
 from site_scraper.discover import Robots
 from site_scraper.extract import documents, internal_links, soup_of
-from site_scraper.urls import dedupe_key, is_crawlable, normalize, same_site
+from site_scraper.guard import HostPolicy
+from site_scraper.urls import dedupe_key, is_crawlable, normalize, same_site, site_key
 
 log = logging.getLogger(__name__)
 MIN_FIT_MARKDOWN = 200  # below this the pruned Markdown probably lost the content: use the raw one
@@ -41,6 +42,11 @@ class CrawlOptions:
     user_agent: str = ""
     insecure: bool = False
     page_timeout_ms: int = 60_000
+    policy: HostPolicy | None = None  # SSRF guard and budget (guard.py); None only in old callers
+
+
+class OffsiteRedirect(SystemExit):
+    """The start URL redirected to another site that is not on the allowlist."""
 
 
 @dataclass
@@ -67,6 +73,7 @@ class CrawlResult:
     skipped_robots: list[str]
     documents: dict[str, dict]
     hit_page_cap: bool
+    budget_hit: str = ""
 
 
 def _markdown_of(result) -> tuple[str, str]:
@@ -124,6 +131,7 @@ async def crawl(
     docs: dict[str, dict] = {}
     sitemap_queued = False
 
+    policy = options.policy
     browser = BrowserConfig(
         headless=True,
         user_agent=options.user_agent,
@@ -131,11 +139,28 @@ async def crawl(
         viewport_height=900,
         ignore_https_errors=options.insecure,
         verbose=False,
+        # Through the egress proxy when compose.yaml provides one (guard.py).
+        proxy_config=policy.browser_proxy if policy is not None else None,
     )
     config = run_config(options)
 
     async with AsyncWebCrawler(config=browser) as crawler:
+        if policy is not None:
+            guarded: set[int] = set()
+
+            async def guard_context(page, context=None, **_kwargs):
+                context = context or page.context
+                if id(context) not in guarded:  # one route handler per browser context
+                    guarded.add(id(context))
+                    await policy.install_browser_guard(context)
+                return page
+
+            crawler.crawler_strategy.set_hook("on_page_context_created", guard_context)
+
         while frontier and len(pages) < options.max_pages:
+            if policy is not None and policy.budget.exhausted:
+                log.warning("stopping the crawl: budget reached (%s)", policy.budget.hit)
+                break
             batch: list[Page] = []
             while frontier and len(batch) < options.concurrency:
                 candidate = frontier.pop(0)
@@ -157,8 +182,17 @@ async def crawl(
                     progress(page, len(pages))
                 if page is pages[0] and page.final_url and not same_site(page.final_url, root):
                     # The start URL redirected to another domain (e.g. old.co.za → new.co.za).
+                    # Only follow it when that site is allowed (standard §8: authorised hosts).
+                    if policy is not None and not policy.on_allowlist(page.final_url):
+                        raise OffsiteRedirect(
+                            f"The start URL redirected to another site: {page.final_url}\n"
+                            f"Run again with that URL if you are authorised to copy it, or add "
+                            f"--allow-host {site_key(page.final_url)}"
+                        )
                     log.warning("start URL redirected to %s; crawling that site", page.final_url)
                     root = page.final_url
+                    if policy is not None:
+                        policy.root = root
                 if not page.html or not same_site(page.final_url or page.url, root):
                     continue
                 soup = soup_of(page.html)
@@ -192,6 +226,7 @@ async def crawl(
         skipped_robots=skipped,
         documents=docs,
         hit_page_cap=bool(frontier) and len(pages) >= options.max_pages,
+        budget_hit=policy.budget.hit if policy is not None else "",
     )
 
 

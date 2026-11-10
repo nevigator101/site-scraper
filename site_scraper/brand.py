@@ -120,11 +120,13 @@ BRAND_JS = r"""
 """
 
 
-async def _brand_for(browser: Browser, url: str, user_agent: str) -> dict:
+async def _brand_for(browser: Browser, url: str, user_agent: str, policy, insecure: bool) -> dict:
     context = await browser.new_context(
-        user_agent=user_agent, viewport={"width": 1280, "height": 900}, ignore_https_errors=True
+        user_agent=user_agent, viewport={"width": 1280, "height": 900}, ignore_https_errors=insecure
     )
     try:
+        if policy is not None:
+            await policy.install_browser_guard(context)
         page = await context.new_page()
         await page.goto(url, wait_until="load", timeout=60_000)
         await page.wait_for_timeout(1500)
@@ -133,16 +135,20 @@ async def _brand_for(browser: Browser, url: str, user_agent: str) -> dict:
         await context.close()
 
 
-async def _mobile_shot(browser: Browser, url: str, target: Path, user_agent: str) -> bool:
+async def _mobile_shot(
+    browser: Browser, url: str, target: Path, user_agent: str, policy, insecure: bool
+) -> bool:
     context = await browser.new_context(
         user_agent=user_agent,
         viewport={"width": 390, "height": 844},
         device_scale_factor=2,
         is_mobile=True,
         has_touch=True,
-        ignore_https_errors=True,
+        ignore_https_errors=insecure,
     )
     try:
+        if policy is not None:
+            await policy.install_browser_guard(context)
         page = await context.new_page()
         await page.goto(url, wait_until="load", timeout=60_000)
         await page.wait_for_timeout(1000)
@@ -157,21 +163,26 @@ async def collect(
     brand_urls: list[str],
     mobile_shots: dict[str, Path],
     user_agent: str,
+    policy=None,
+    insecure: bool = False,
 ) -> tuple[dict, list[str]]:
-    """Brand data per URL, and the list of mobile screenshots that were written."""
+    """Brand data per URL, and the list of mobile screenshots that were written.
+
+    `policy` (guard.HostPolicy) checks every request the browser sends."""
     brand: dict = {}
     written: list[str] = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        proxy = policy.browser_proxy if policy is not None else None
+        browser = await p.chromium.launch(headless=True, proxy=proxy)
         try:
             for url in brand_urls:
                 try:
-                    brand[url] = await _brand_for(browser, url, user_agent)
+                    brand[url] = await _brand_for(browser, url, user_agent, policy, insecure)
                 except PlaywrightError as exc:
                     log.warning("brand read failed for %s: %s", url, exc)
             for url, target in mobile_shots.items():
                 try:
-                    if await _mobile_shot(browser, url, target, user_agent):
+                    if await _mobile_shot(browser, url, target, user_agent, policy, insecure):
                         written.append(url)
                 except PlaywrightError as exc:
                     log.warning("mobile screenshot failed for %s: %s", url, exc)

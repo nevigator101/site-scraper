@@ -10,13 +10,12 @@ from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
-import httpx
-
 from site_scraper import USER_AGENT, __version__
 from site_scraper.assets import download
 from site_scraper.brand import collect, summarise
 from site_scraper.crawl import CrawlOptions, Page, crawl
 from site_scraper.discover import Robots, fetch_robots, fetch_sitemap_urls
+from site_scraper.guard import BUILDER_CDNS, Budget, HostPolicy
 from site_scraper.report import (
     add_stylesheet_images,
     all_stylesheets,
@@ -60,6 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--insecure", action="store_true", help="Accept broken or expired HTTPS certificates"
     )
+    parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="Also download from HOST and its subdomains (repeatable). The site itself and "
+        f"the builder CDNs ({', '.join(BUILDER_CDNS)}) are always allowed.",
+    )
+    parser.add_argument(
+        "--max-requests", type=int, default=5000, help="Total requests, all kinds (5000)"
+    )
+    parser.add_argument(
+        "--max-total-mb", type=int, default=2048, help="Total download size in MB (2048)"
+    )
+    parser.add_argument(
+        "--max-runtime-min", type=int, default=120, help="Stop after this many minutes (120)"
+    )
     parser.add_argument("--user-agent", default=USER_AGENT, help="User-Agent header")
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
     parser.add_argument("--version", action="version", version=f"site-scraper {__version__}")
@@ -77,6 +93,12 @@ async def run(args: argparse.Namespace) -> Path:
         raise SystemExit(f"Not a web address: {args.url}")
     out = Path(args.out) / f"{site_key(start).replace(':', '_')}-{date.today():%Y%m%d}"
     out.mkdir(parents=True, exist_ok=True)
+    budget = Budget(
+        max_requests=args.max_requests,
+        max_bytes=args.max_total_mb * 1024 * 1024,
+        max_seconds=args.max_runtime_min * 60,
+    )
+    policy = HostPolicy.for_run(start, args.allow_host, budget)
     options = CrawlOptions(
         max_pages=args.max_pages,
         max_depth=args.max_depth,
@@ -85,11 +107,23 @@ async def run(args: argparse.Namespace) -> Path:
         screenshots=not args.no_screenshots,
         user_agent=args.user_agent,
         insecure=args.insecure,
+        policy=policy,
     )
+    for flag, why in (
+        ("ignore_robots", "robots.txt is ignored"),
+        ("insecure", "broken HTTPS certificates are accepted"),
+    ):
+        if getattr(args, flag):
+            print(
+                f"WARNING: --{flag.replace('_', '-')}: {why}. Use it only with Nev's approval, "
+                "and record it in the client's docs/client.md (RnD Labs standard §8).",
+                file=sys.stderr,
+            )
     headers = {"User-Agent": args.user_agent}
-    async with httpx.AsyncClient(
-        headers=headers, follow_redirects=True, timeout=30, verify=not args.insecure
-    ) as client:
+    async with policy.http_client(
+        headers=headers, follow_redirects=True, max_redirects=10, timeout=30,
+        verify=not args.insecure,
+    ) as client:  # fmt: skip
         print(f"site-scraper {__version__}: {start} → {out}")
         robots = (
             Robots() if args.ignore_robots else await fetch_robots(client, start, args.user_agent)
@@ -123,7 +157,13 @@ async def run(args: argparse.Namespace) -> Path:
             print(
                 f"reading brand from {len(brand_urls)} page(s), {len(shots)} mobile screenshot(s)"
             )
-            per_page, _ = await collect([] if args.no_brand else brand_urls, shots, args.user_agent)
+            per_page, _ = await collect(
+                [] if args.no_brand else brand_urls,
+                shots,
+                args.user_agent,
+                policy=policy,
+                insecure=args.insecure,
+            )
             brand = summarise(per_page)
 
         if not args.no_images:
@@ -137,9 +177,21 @@ async def run(args: argparse.Namespace) -> Path:
             assets = [a for a in assets if a.kind != "image"]
         if assets:
             print(f"downloading {len(assets)} images/documents...")
-            await download(assets, out, client)
+            await download(assets, out, client, allowed=policy.on_allowlist)
 
-        run_options = {**asdict(options), "url": start, "ignore_robots": args.ignore_robots}
+        run_options = {
+            **{k: v for k, v in asdict(options).items() if k != "policy"},
+            "url": start,
+            "ignore_robots": args.ignore_robots,
+            "allow_hosts": list(policy.allow_hosts),
+            "limits": {
+                "max_requests": budget.max_requests,
+                "max_total_mb": args.max_total_mb,
+                "max_runtime_min": args.max_runtime_min,
+            },
+            "used": {"requests": budget.requests, "bytes": budget.bytes},
+            "budget_hit": budget.hit,
+        }
         write_data(out, site, assets, brand, run_options)
         write_report(out, site, assets, brand, run_options)
 

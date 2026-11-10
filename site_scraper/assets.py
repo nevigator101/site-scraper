@@ -19,6 +19,8 @@ from site_scraper.urls import slugify
 log = logging.getLogger(__name__)
 
 MAX_BYTES = 30 * 1024 * 1024
+# Images are only measured, never decoded in full; refuse decompression bombs all the same.
+Image.MAX_IMAGE_PIXELS = 100_000_000
 IMAGE_TYPES = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
@@ -96,22 +98,29 @@ def _measure(data: bytes) -> tuple[int | None, int | None]:
     try:
         with Image.open(BytesIO(data)) as img:
             return img.width, img.height
-    except Exception:  # noqa: BLE001 (SVG, ICO variants, corrupt files: size is optional)
+    except Exception:  # noqa: BLE001 (SVG, ICO, bombs, corrupt files: size is optional)
         return None, None
 
 
-async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes] | None:
-    """(content type, body) or None. Stops reading past MAX_BYTES."""
+async def _fetch(
+    client: httpx.AsyncClient, url: str, max_bytes: int = MAX_BYTES
+) -> tuple[str, bytes] | None:
+    """(content type, body) or None. Stops reading past `max_bytes` (decoded bytes, so a
+    compressed response cannot expand past it). Bytes count against the run budget of a client
+    made by HostPolicy.http_client; blocked and over-budget requests return None."""
+    budget = getattr(client, "scraper_budget", None)
     try:
         async with client.stream("GET", url) as response:
             if response.status_code >= 400:
                 return None
-            if int(response.headers.get("content-length") or 0) > MAX_BYTES:
+            if int(response.headers.get("content-length") or 0) > max_bytes:
                 return None
             chunks, total = [], 0
             async for chunk in response.aiter_bytes():
                 total += len(chunk)
-                if total > MAX_BYTES:
+                if budget is not None:
+                    budget.count_bytes(len(chunk))
+                if total > max_bytes:
                     return None
                 chunks.append(chunk)
             content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -121,20 +130,34 @@ async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, bytes] | Non
         return None
 
 
+OFFSITE = "skipped: off-site host, not on the allowlist (fetch by hand if needed, or --allow-host)"
+
+
 async def download(
     assets: list[Asset],
     out_dir: Path,
     client: httpx.AsyncClient,
     concurrency: int = 4,
+    allowed=None,
 ) -> list[Asset]:
-    """Download every asset into out_dir/images or out_dir/files. Dedupes by content hash."""
+    """Download every asset into out_dir/images or out_dir/files. Dedupes by content hash.
+
+    `allowed(url) -> bool` (HostPolicy.on_allowlist) skips off-site assets up front and records
+    why, so a person can fetch them by hand (standard §8)."""
     semaphore = asyncio.Semaphore(concurrency)
     by_hash: dict[str, str] = {}
     used_names: set[str] = set()
     lock = asyncio.Lock()
+    budget = getattr(client, "scraper_budget", None)
 
     async def one(asset: Asset) -> None:
+        if allowed is not None and not allowed(asset.url):
+            asset.error = OFFSITE
+            return
         async with semaphore:
+            if budget is not None and budget.exhausted:
+                asset.error = f"skipped: budget reached ({budget.hit})"
+                return
             fetched = None
             candidates = original_candidates(asset.url) if asset.kind == "image" else [asset.url]
             for candidate in candidates:
