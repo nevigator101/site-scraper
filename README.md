@@ -126,7 +126,7 @@ A big site (hundreds of pages) can take hours. Nothing is held only in memory:
 - If the run stops (a crash, Docker restarting, the PC sleeping), run the same command again with
   `--resume`. Saved pages are not fetched again. A plain re-run refuses to start while a
   `_crawl/` folder exists, so a stopped crawl is never overwritten by accident.
-- The browser restarts every 100 pages, because Chromium's memory grows over a long crawl.
+- The browser restarts every 25 pages, because Chromium's memory grows over a long crawl.
 - The scraper container is capped at 4 GB of memory (`compose.yaml`), so a runaway crawl stops
   that container rather than the whole Docker VM.
 - For a long run, start it detached so closing the terminal does not stop it:

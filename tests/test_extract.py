@@ -80,6 +80,13 @@ def test_platform_detection():
     assert extract.detect_platform("<p>hi</p>")["platform"].startswith("unknown")
 
 
+def test_elementor_divider_is_not_divi():
+    elementor = '<div class="elementor-widget-divider"><link id="elementor-divider-css">'
+    assert extract.detect_platform(elementor)["plugins"] == ["Elementor"]
+    divi = '<div class="et_pb_section"><link href="/wp-content/themes/Divi/style.css">'
+    assert "Divi" in extract.detect_platform(divi)["plugins"]
+
+
 def test_images_with_alt_and_missing_alt():
     found = {i["url"]: i for i in extract.images(HOME, BASE)}
     assert found["https://acme-plumbing.test/img/hero.png"]["alt"] == "A plumber fixing a geyser"

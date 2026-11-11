@@ -8,7 +8,10 @@ from pathlib import Path
 from playwright.async_api import Browser, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
+from site_scraper.shots import capped_screenshot
+
 log = logging.getLogger(__name__)
+MOBILE_MAX_HEIGHT = 12_000  # CSS px; at 2x that is a 780 x 24,000 image at most
 
 # Runs in the page. Collects computed colours (weighted by visible area), fonts, CSS custom
 # properties, @font-face rules, Google Fonts links and logo candidates.
@@ -153,7 +156,7 @@ async def _mobile_shot(
         await page.goto(url, wait_until="load", timeout=60_000)
         await page.wait_for_timeout(1000)
         target.parent.mkdir(parents=True, exist_ok=True)
-        await page.screenshot(path=str(target), full_page=True)
+        target.write_bytes(await capped_screenshot(page, MOBILE_MAX_HEIGHT))
         return True
     finally:
         await context.close()

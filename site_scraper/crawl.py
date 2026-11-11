@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import re
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -29,11 +30,27 @@ from site_scraper.checkpoint import FIELDS, Checkpoint
 from site_scraper.discover import Robots
 from site_scraper.extract import documents, internal_links, soup_of
 from site_scraper.guard import HostPolicy
+from site_scraper.shots import capped_screenshot
 from site_scraper.urls import dedupe_key, is_crawlable, normalize, same_site, site_key
 
 log = logging.getLogger(__name__)
 MIN_FIT_MARKDOWN = 200  # below this the pruned Markdown probably lost the content: use the raw one
 STRUCTURAL_BLOCK = "Blocked by anti-bot protection: Structural"
+MAX_SCROLL_STEPS = 25
+# Ads and analytics only: they hold back the "load" event, cost memory and add nothing to a
+# rebuild kit. Analytics IDs are still read from the HTML (extract.py).
+TRACKERS = re.compile(
+    r"^https?://([^/]*\.)?(googlesyndication\.com|doubleclick\.net|adtrafficquality\.google"
+    r"|google-analytics\.com|analytics\.google\.com|googletagmanager\.com|googleadservices\.com"
+    r"|connect\.facebook\.net|hotjar\.com|clarity\.ms|bat\.bing\.com|analytics\.tiktok\.com"
+    r"|postaffiliatepro\.com)(:\d+)?/"
+)
+# Audio and video files: the guard passes every browser request through Playwright and Python,
+# so a blog archive listing dozens of 8 MB narrations filled the driver's memory. Screenshots
+# only show the player; the files themselves are listed and downloaded from the HTML.
+MEDIA_FILES = re.compile(
+    r"\.(mp3|wav|m4a|aac|ogg|oga|opus|flac|mp4|m4v|webm|mov|avi)([?#]|$)", re.I
+)
 
 
 @dataclass
@@ -45,9 +62,12 @@ class CrawlOptions:
     screenshots: bool = True
     user_agent: str = ""
     insecure: bool = False
-    page_timeout_ms: int = 60_000
+    # Fail fast on the first pass (a slow page must not hold up the crawl); failed pages are
+    # tried again at the end with the longer retry timeout.
+    page_timeout_ms: int = 30_000
+    retry_timeout_ms: int = 90_000
     # Chromium's memory grows over a long crawl; a fresh browser every N pages keeps it flat.
-    restart_browser_every: int = 100
+    restart_browser_every: int = 25
     # Desktop screenshots are written here as they are taken instead of being held in memory:
     # a full-page PNG can be several MB, so a few hundred pages filled the container's RAM.
     spool_dir: str = ""
@@ -109,19 +129,22 @@ def _screenshot_of(result) -> bytes | None:
         return None
 
 
-def run_config(options: CrawlOptions) -> CrawlerRunConfig:
+def run_config(options: CrawlOptions, timeout_ms: int | None = None) -> CrawlerRunConfig:
     return CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         markdown_generator=DefaultMarkdownGenerator(
             content_filter=PruningContentFilterLXML(threshold=0.45, threshold_type="dynamic"),
             options={"ignore_images": False, "body_width": 0},
         ),
-        screenshot=options.screenshots,
+        # Screenshots are taken by our before_return_html hook (shots.py), capped in height.
+        screenshot=False,
         scan_full_page=True,
         scroll_delay=0.2,
+        # Endless archives can be 100,000+ px; 25 screens loads every lazy image a person sees.
+        max_scroll_steps=MAX_SCROLL_STEPS,
         wait_until="load",
         delay_before_return_html=1.0,
-        page_timeout=options.page_timeout_ms,
+        page_timeout=timeout_ms or options.page_timeout_ms,
         remove_overlay_elements=True,
         verbose=False,
     )
@@ -163,6 +186,7 @@ async def crawl(
         spool.mkdir(parents=True, exist_ok=True)
     retried = False
     since_restart = 0
+    shots: dict[str, bytes] | None = {} if options.screenshots else None
 
     def discover(page: Page) -> None:
         """Note the page's documents and queue its unseen same-site links."""
@@ -216,71 +240,105 @@ async def crawl(
     if checkpoint is not None:
         checkpoint.save_meta(start_url=start_url, root=root)
 
-    crawler = await _start_crawler(browser, policy)
+    retry_config = run_config(options, options.retry_timeout_ms)
+    retry_urls: set[str] = set()
+    in_flight: dict[asyncio.Task, Page] = {}
+    loop = asyncio.get_running_loop()
+    last_start = -delay
+    stopping = False
+
+    def handle(page: Page, result) -> None:
+        nonlocal root
+        _fill(page, result, spool, _pop_shot(shots, page, result))
+        if checkpoint is not None:
+            checkpoint.save(page)
+        pages.append(page)
+        if progress:
+            progress(page, len(pages))
+        if page.source == "start" and page.final_url and not same_site(page.final_url, root):
+            # The start URL redirected to another domain (e.g. old.co.za -> new.co.za).
+            # Only follow it when that site is allowed (standard 8: authorised hosts).
+            if policy is not None and not policy.on_allowlist(page.final_url):
+                raise OffsiteRedirect(
+                    f"The start URL redirected to another site: {page.final_url}\n"
+                    f"Run again with that URL if you are authorised to copy it, or add "
+                    f"--allow-host {site_key(page.final_url)}"
+                )
+            log.warning("start URL redirected to %s; crawling that site", page.final_url)
+            root = page.final_url
+            if policy is not None:
+                policy.root = root
+            if checkpoint is not None:
+                checkpoint.save_meta(start_url=start_url, root=root)
+        discover(page)
+
+    crawler = await _start_crawler(browser, policy, shots)
     try:
-        while frontier and len(pages) < options.max_pages:
+        while True:
+            # Each free slot starts the next page straight away (no waiting for a slow
+            # neighbour), at most `concurrency` at once and `delay` seconds apart.
+            while (
+                not stopping
+                and frontier
+                and len(in_flight) < options.concurrency
+                and len(pages) + len(in_flight) < options.max_pages
+                and since_restart < options.restart_browser_every
+            ):
+                if policy is not None and policy.budget.exhausted:
+                    log.warning("stopping the crawl: budget reached (%s)", policy.budget.hit)
+                    stopping = True
+                    break
+                candidate = frontier.pop(0)
+                if not robots.allowed(candidate.url, options.user_agent):
+                    skipped.append(candidate.url)
+                    continue
+                wait = last_start + delay - loop.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                last_start = loop.time()
+                cfg = retry_config if candidate.url in retry_urls else config
+                task = asyncio.create_task(crawler.arun(url=candidate.url, config=cfg))
+                in_flight[task] = candidate
+                since_restart += 1
+            if in_flight:
+                done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    page = in_flight.pop(task)
+                    try:
+                        result = task.result()
+                    except Exception as exc:  # noqa: BLE001 - recorded on the page, retried later
+                        result = exc
+                    handle(page, result)
+                continue
+            # Nothing is in flight.
+            if stopping or len(pages) >= options.max_pages:
+                break
             if since_restart >= options.restart_browser_every:
                 await crawler.close()
-                crawler = await _start_crawler(browser, policy)
+                crawler = await _start_crawler(browser, policy, shots)
                 since_restart = 0
-            if policy is not None and policy.budget.exhausted:
-                log.warning("stopping the crawl: budget reached (%s)", policy.budget.hit)
-                break
-            batch: list[Page] = []
-            while frontier and len(batch) < options.concurrency:
-                candidate = frontier.pop(0)
-                if robots.allowed(candidate.url, options.user_agent):
-                    batch.append(candidate)
-                else:
-                    skipped.append(candidate.url)
-            batch = batch[: options.max_pages - len(pages)]
-            if not batch:
+            if frontier:
                 continue
-            results = await asyncio.gather(
-                *(crawler.arun(url=page.url, config=config) for page in batch),
-                return_exceptions=True,
-            )
-            since_restart += len(batch)
-            for page, result in zip(batch, results, strict=True):
-                _fill(page, result, spool)
-                if checkpoint is not None:
-                    checkpoint.save(page)
-                pages.append(page)
-                if progress:
-                    progress(page, len(pages))
-                if page is pages[0] and page.final_url and not same_site(page.final_url, root):
-                    # The start URL redirected to another domain (e.g. old.co.za → new.co.za).
-                    # Only follow it when that site is allowed (standard §8: authorised hosts).
-                    if policy is not None and not policy.on_allowlist(page.final_url):
-                        raise OffsiteRedirect(
-                            f"The start URL redirected to another site: {page.final_url}\n"
-                            f"Run again with that URL if you are authorised to copy it, or add "
-                            f"--allow-host {site_key(page.final_url)}"
-                        )
-                    log.warning("start URL redirected to %s; crawling that site", page.final_url)
-                    root = page.final_url
-                    if policy is not None:
-                        policy.root = root
-                    if checkpoint is not None:
-                        checkpoint.save_meta(start_url=start_url, root=root)
-                discover(page)
-            if not frontier and not sitemap_queued:
+            if not sitemap_queued:
                 sitemap_queued = queue_sitemap()
-            if not frontier and sitemap_queued and not retried:
+                continue
+            if not retried:
                 # Pages that failed in the browser (crash, timeout) or with a 5xx get one more try
-                # at the end, in a fresh browser. 4xx answers are real and are not retried.
+                # at the end, in a fresh browser and with a longer timeout. 4xx answers are real.
                 retried = True
-                failed = {id(p) for p in pages if _retryable(p)}
+                failed = [p for p in pages if _retryable(p)]
                 if failed:
                     log.warning("retrying %d failed page(s) in a fresh browser", len(failed))
-                    frontier.extend(
-                        Page(p.url, p.depth, p.found_on, p.source) for p in pages if id(p) in failed
-                    )
-                    pages = [p for p in pages if id(p) not in failed]
+                    frontier.extend(Page(p.url, p.depth, p.found_on, p.source) for p in failed)
+                    retry_urls.update(p.url for p in failed)
+                    gone = {id(p) for p in failed}
+                    pages = [p for p in pages if id(p) not in gone]
                     since_restart = options.restart_browser_every
-            if frontier and len(pages) < options.max_pages:
-                await asyncio.sleep(delay)
+                continue
+            break
     finally:
+        for task in in_flight:
+            task.cancel()
         await crawler.close()
 
     return CrawlResult(
@@ -293,20 +351,39 @@ async def crawl(
     )
 
 
-async def _start_crawler(browser: BrowserConfig, policy: HostPolicy | None) -> AsyncWebCrawler:
+async def _start_crawler(
+    browser: BrowserConfig, policy: HostPolicy | None, shots: dict[str, bytes] | None = None
+) -> AsyncWebCrawler:
     crawler = AsyncWebCrawler(config=browser)
     await crawler.start()
-    if policy is not None:
-        guarded: set[int] = set()
+    if shots is not None:
 
-        async def guard_context(page, context=None, **_kwargs):
-            context = context or page.context
-            if id(context) not in guarded:  # one route handler per browser context
-                guarded.add(id(context))
-                await policy.install_browser_guard(context)
+        async def shoot(page, **_kwargs):
+            # Runs after the HTML is captured, so the saved HTML is untouched.
+            try:
+                shots[normalize(page.url) or page.url] = await capped_screenshot(
+                    page, type="png", timeout=30_000
+                )
+            except Exception as exc:  # noqa: BLE001 - a missing screenshot must not fail the page
+                log.warning("screenshot failed for %s: %s", page.url, exc)
             return page
 
-        crawler.crawler_strategy.set_hook("on_page_context_created", guard_context)
+        crawler.crawler_strategy.set_hook("before_return_html", shoot)
+    prepared: set[int] = set()
+
+    async def prepare_context(page, context=None, **_kwargs):
+        context = context or page.context
+        if id(context) not in prepared:  # once per browser context
+            prepared.add(id(context))
+            if policy is not None:
+                await policy.install_browser_guard(context)
+            # Registered after the guard, so Playwright asks these routes first; they only match
+            # trackers and audio/video files, everything else still goes through the guard.
+            await context.route(TRACKERS, lambda route: route.abort("blockedbyclient"))
+            await context.route(MEDIA_FILES, lambda route: route.abort("blockedbyclient"))
+        return page
+
+    crawler.crawler_strategy.set_hook("on_page_context_created", prepare_context)
     return crawler
 
 
@@ -314,7 +391,17 @@ def _retryable(page: Page) -> bool:
     return not page.ok and (page.status is None or page.status >= 500)
 
 
-def _fill(page: Page, result, spool: Path | None = None) -> None:
+def _pop_shot(shots: dict[str, bytes] | None, page: Page, result) -> bytes | None:
+    if not shots or isinstance(result, BaseException):
+        return None
+    for url in (getattr(result, "redirected_url", None), getattr(result, "url", None), page.url):
+        shot = shots.pop(normalize(url or "") or "", None)
+        if shot:
+            return shot
+    return None
+
+
+def _fill(page: Page, result, spool: Path | None = None, shot: bytes | None = None) -> None:
     if isinstance(result, BaseException):
         page.error = f"{type(result).__name__}: {result}"[:500]
         return
@@ -332,7 +419,7 @@ def _fill(page: Page, result, spool: Path | None = None) -> None:
     if page.ok:
         page.html = html
         page.markdown, page.raw_markdown = _markdown_of(result)
-        shot = _screenshot_of(result)
+        shot = shot or _screenshot_of(result)
         if shot and spool is not None:
             target = spool / f"{hashlib.sha256(page.url.encode()).hexdigest()[:24]}.png"
             target.write_bytes(shot)

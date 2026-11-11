@@ -63,7 +63,8 @@ PLATFORM_SIGNS = [
 
 PAGE_BUILDERS = [
     ("Elementor", re.compile(r"elementor", re.I)),
-    ("Divi", re.compile(r"et_pb_|Divi", re.I)),
+    # Divi's own class prefix, theme or plugin path; a bare "divi" also matches "divider".
+    ("Divi", re.compile(r"\bet_pb_|/themes/Divi/|/plugins/divi-builder/", re.I)),
     ("WPBakery", re.compile(r"vc_row|js_composer", re.I)),
     ("WooCommerce", re.compile(r"woocommerce", re.I)),
     ("Yoast SEO", re.compile(r"yoast", re.I)),

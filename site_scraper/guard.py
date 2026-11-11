@@ -56,6 +56,19 @@ class BudgetExceeded(Blocked):
     """The run reached one of its limits (requests, bytes or time)."""
 
 
+async def _settle(action) -> None:
+    """Answer a browser request, unless its page or context has closed in the meantime.
+
+    Closing a context while requests are in flight is normal (the next page, the next mobile
+    screenshot). Raising here would surface later as "Response has been disposed" on an unrelated
+    browser call and fail it.
+    """
+    try:
+        await action
+    except Exception as exc:  # noqa: BLE001
+        log.debug("browser request already gone: %s", exc)
+
+
 def is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address)
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
@@ -253,22 +266,26 @@ class HostPolicy:
                     break
             except Blocked as exc:
                 log.info("browser %s", exc)
-                await route.abort("blockedbyclient")
+                await _settle(route.abort("blockedbyclient"))
                 return
             except Exception as exc:  # noqa: BLE001 (network errors: the browser sees a failure)
                 log.debug("browser fetch failed %s: %s", current, exc)
-                await route.abort("failed")
+                await _settle(route.abort("failed"))
                 return
             if hops and request.is_navigation_request():
-                await route.fulfill(status=302, headers={"location": current}, body="")
+                await _settle(route.fulfill(status=302, headers={"location": current}, body=""))
                 return
-            body = await response.body()
+            try:
+                body = await response.body()
+            except Exception as exc:  # noqa: BLE001 - the page or context closed meanwhile
+                log.debug("browser response dropped %s: %s", current, exc)
+                return
             try:
                 self.budget.count_bytes(len(body))
             except BudgetExceeded:
-                await route.abort("blockedbyclient")
+                await _settle(route.abort("blockedbyclient"))
                 return
-            await route.fulfill(response=response, body=body)
+            await _settle(route.fulfill(response=response, body=body))
 
         await context.route("**/*", handle)
 
