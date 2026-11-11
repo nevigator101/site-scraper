@@ -19,6 +19,10 @@ services:
     image: site-scraper:latest
     init: true
     shm_size: 1gb # Chromium needs more than Docker's default 64 MB of shared memory
+    # A cap so a runaway crawl stops this container, not the whole Docker VM. Pages are saved as
+    # they are fetched (_crawl/), so `--resume` carries on if the cap is ever hit.
+    mem_limit: 4g
+    memswap_limit: 4g
     environment:
       SCRAPER_PROXY: http://egress:3128
     networks: [scrape-internal]

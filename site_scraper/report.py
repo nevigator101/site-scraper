@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import shutil
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
@@ -82,7 +83,7 @@ def analyse(crawl: CrawlResult) -> dict:
             "slug": slug,
             "markdown": page.markdown,
             "html": page.html,
-            "screenshot": page.screenshot,
+            "screenshot_file": page.screenshot_file,
             "meta": {},
             "word_count": 0,
             "jsonld_types": [],
@@ -238,9 +239,10 @@ def write_pages(out: Path, site: dict) -> None:
             _front_matter(record) + record["markdown"].strip() + "\n", encoding="utf-8"
         )
         (pages_dir / f"{slug}.html").write_text(record["html"], encoding="utf-8")
-        if record["screenshot"]:
+        shot = Path(record["screenshot_file"]) if record["screenshot_file"] else None
+        if shot and shot.exists():
             shots_dir.mkdir(parents=True, exist_ok=True)
-            (shots_dir / f"{slug}-desktop.png").write_bytes(record["screenshot"])
+            shutil.move(shot, shots_dir / f"{slug}-desktop.png")
 
 
 def write_data(out: Path, site: dict, assets: list[Asset], brand: dict, options: dict) -> None:

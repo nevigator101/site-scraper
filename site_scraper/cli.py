@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import shutil
 import sys
 from dataclasses import asdict
 from datetime import date
@@ -13,6 +14,7 @@ from pathlib import Path
 from site_scraper import USER_AGENT, __version__
 from site_scraper.assets import download
 from site_scraper.brand import collect, summarise
+from site_scraper.checkpoint import FOLDER as CHECKPOINT_FOLDER
 from site_scraper.crawl import CrawlOptions, Page, crawl
 from site_scraper.discover import Robots, fetch_robots, fetch_sitemap_urls
 from site_scraper.guard import BUILDER_CDNS, Budget, HostPolicy
@@ -57,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-brand", action="store_true", help="Skip colour/font extraction")
     parser.add_argument("--no-sitemap", action="store_true", help="Only follow links")
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Carry on a crawl that stopped, from the newest kit folder's _crawl/ for this site",
+    )
+    parser.add_argument(
         "--insecure", action="store_true", help="Accept broken or expired HTTPS certificates"
     )
     parser.add_argument(
@@ -91,7 +98,22 @@ async def run(args: argparse.Namespace) -> Path:
     start = normalize(args.url if "://" in args.url else f"https://{args.url}")
     if not start:
         raise SystemExit(f"Not a web address: {args.url}")
-    out = Path(args.out) / f"{site_key(start).replace(':', '_')}-{date.today():%Y%m%d}"
+    site_name = site_key(start).replace(":", "_")
+    out = Path(args.out) / f"{site_name}-{date.today():%Y%m%d}"
+    if args.resume:
+        stopped = sorted(
+            p.parent
+            for p in Path(args.out).glob(f"{site_name}-*/{CHECKPOINT_FOLDER}")
+            if p.is_dir()
+        )
+        if not stopped:
+            raise SystemExit(f"Nothing to resume: no {site_name}-*/{CHECKPOINT_FOLDER}/ folder")
+        out = stopped[-1]
+    elif (out / CHECKPOINT_FOLDER).exists():
+        raise SystemExit(
+            f"A stopped crawl is saved in {out / CHECKPOINT_FOLDER}.\n"
+            "Run again with --resume to carry on, or delete that folder to start over."
+        )
     out.mkdir(parents=True, exist_ok=True)
     budget = Budget(
         max_requests=args.max_requests,
@@ -108,6 +130,8 @@ async def run(args: argparse.Namespace) -> Path:
         user_agent=args.user_agent,
         insecure=args.insecure,
         policy=policy,
+        checkpoint_dir=str(out / CHECKPOINT_FOLDER),
+        resume=args.resume,
     )
     for flag, why in (
         ("ignore_robots", "robots.txt is ignored"),
@@ -194,6 +218,8 @@ async def run(args: argparse.Namespace) -> Path:
         }
         write_data(out, site, assets, brand, run_options)
         write_report(out, site, assets, brand, run_options)
+        # The kit now holds everything the checkpoint did.
+        shutil.rmtree(out / CHECKPOINT_FOLDER, ignore_errors=True)
 
     saved = sum(1 for r in site["records"] if r["ok"])
     print(f"done: {saved} pages, {sum(1 for a in assets if a.file)} files → {out / 'REPORT.md'}")

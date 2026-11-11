@@ -46,6 +46,9 @@ the `SCRAPER_OUTPUT` environment variable.
    domain count as one site; subdomains do not). Then it crawls pages only the sitemap knows
    about. Each page is rendered in headless Chromium through [Crawl4AI](https://github.com/unclecode/crawl4ai),
    so JavaScript-built sites (Wix, Squarespace, React) work. Lazy-loaded content is scrolled in.
+   Each page is saved to `_crawl/` in the kit folder the moment it is fetched (see
+   [Long crawls](#long-crawls-and-resuming)). Pages that failed in the browser or with a 5xx get
+   one more try at the end.
 3. Reads facts from each page's HTML: metadata, JSON-LD, contact details, menu, forms,
    third-party scripts, images. Background images are read from `style` attributes,
    `<style>` blocks, lazy-load attributes (`data-bg`, `data-background`…), JSON in `data-*`
@@ -104,6 +107,7 @@ docker compose run --rm scrape <url> [options]
 | `--no-images` / `--no-files` | | Skip downloading images / documents |
 | `--no-screenshots` / `--no-brand` | | Skip screenshots / colour and font reading |
 | `--no-sitemap` | | Only follow links |
+| `--resume` | | Carry on a crawl that stopped, from its `_crawl/` folder. Use the same options as the first run |
 | `--insecure` | | Accept an expired or broken HTTPS certificate (common on old sites). Needs approval, see below |
 | `--ignore-robots` | | Ignore robots.txt. Only when the site owner asked you to, with approval |
 | `--allow-host HOST` | | Also download from HOST and its subdomains (repeatable) |
@@ -111,6 +115,23 @@ docker compose run --rm scrape <url> [options]
 | `--max-total-mb N` | 2048 | Total download size |
 | `--max-runtime-min N` | 120 | Stop after this many minutes |
 | `--user-agent UA` | `site-scraper/<version> (site rebuild; +repo URL)` | |
+
+### Long crawls and resuming
+
+A big site (hundreds of pages) can take hours. Nothing is held only in memory:
+
+- Every page is written to `<kit>/_crawl/` as soon as it is fetched: `pages.jsonl` (one line per
+  page), `html/`, `md/` (readable Markdown) and `shots/` (desktop screenshots). When the kit is
+  written, `_crawl/` is deleted, because everything in it is then in `pages/` and `screenshots/`.
+- If the run stops (a crash, Docker restarting, the PC sleeping), run the same command again with
+  `--resume`. Saved pages are not fetched again. A plain re-run refuses to start while a
+  `_crawl/` folder exists, so a stopped crawl is never overwritten by accident.
+- The browser restarts every 100 pages, because Chromium's memory grows over a long crawl.
+- The scraper container is capped at 4 GB of memory (`compose.yaml`), so a runaway crawl stops
+  that container rather than the whole Docker VM.
+- For a long run, start it detached so closing the terminal does not stop it:
+  `docker compose run -d --name scrape-<site> scrape <url> [options]`, then
+  `docker logs -f scrape-<site>`.
 
 ## Security and privacy
 
