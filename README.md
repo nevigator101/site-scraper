@@ -29,8 +29,8 @@ the `SCRAPER_OUTPUT` environment variable.
 | `REPORT.md` | Summary: old platform, every page with a suggested new path, modules the site needs (blog, shop), brand tokens, business details, main menu, forms, third-party services, SEO gaps, broken links, next steps | Start here |
 | `pages/<slug>.md` | Main content as Markdown (menus and footers pruned), with front matter: URL, title, meta description, H1, suggested new path | Page copy for the new site |
 | `pages/<slug>.html` | The rendered HTML | Reference when the Markdown is not enough |
-| `screenshots/<slug>-desktop.png` | Full-page screenshot at 1280 px, every page | Design reference |
-| `screenshots/<slug>-mobile.png` | Full-page screenshot at 390 px, home and main-menu pages | Mobile layout reference |
+| `screenshots/<slug>-desktop.webp` | Full-page screenshot at 1280 px (top 15,000 px), every page | Design reference |
+| `screenshots/<slug>-mobile.webp` | Full-page screenshot at 390 px, 2x (top 8,000 px), home and main-menu pages | Mobile layout reference |
 | `inventory.csv` | Every URL: status, redirect, title, meta description, H1, canonical, word count, inlinks, depth, how it was found, suggested new path | SEO baseline, content audit |
 | `redirects.csv` | `old_path → new_path` draft, with confidence. Blank `new_path` = a person decides | Your 301 redirect map |
 | `images/` + `images.csv` | Images at the best available resolution (Wix, Squarespace, Shopify and WordPress resized copies are swapped for the original), with alt text, size, how each is used (`img`, `background`, `css_background`, `video_poster`, `icon`…), where a linked image points (`links_to`), and the pages each is used on | Re-uploading images, fixing missing alt text |
@@ -38,6 +38,12 @@ the `SCRAPER_OUTPUT` environment variable.
 | `brand.json` | Suggested tokens (background, text, heading, accent, link, button, header, footer, body/heading fonts), most-used colours, CSS custom properties, @font-face rules, web-font links, logo candidates, inline SVG logo | CSS design tokens |
 | `business.json` | Name, address, hours, phones, emails, WhatsApp, social profiles (from JSON-LD and the pages), main menu tree, forms and their fields, analytics IDs, embeds, external hosts | Site settings, contact page, Content Security Policy |
 | `site.json` | Everything above per page, plus run options and URLs skipped by robots.txt | Scripts and agents |
+
+Screenshots are saved as WebP (quality 80), about a sixth of the size of PNG with text still
+sharp, so a big site's kit stays small enough to keep. Browsers, VS Code and most image viewers
+open WebP. If a tool needs PNG, convert the one you need:
+`python -c "from PIL import Image; Image.open('home-desktop.webp').save('home-desktop.png')"`
+(or `ffmpeg -i home-desktop.webp home-desktop.png`).
 
 ## How it works
 

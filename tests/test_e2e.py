@@ -33,8 +33,11 @@ async def test_writes_the_whole_kit(kit):
         assert (kit / name).is_file(), name
     assert (kit / "pages" / "home.md").is_file()
     assert (kit / "pages" / "home.html").is_file()
-    assert (kit / "screenshots" / "home-desktop.png").stat().st_size > 1000
-    assert (kit / "screenshots" / "home-mobile.png").stat().st_size > 1000
+    for name in ("home-desktop.webp", "home-mobile.webp"):
+        shot = kit / "screenshots" / name
+        assert shot.stat().st_size > 1000, name
+        assert shot.read_bytes()[8:12] == b"WEBP", name
+    assert not list((kit / "screenshots").glob("*.png"))
 
 
 @pytest.mark.asyncio(loop_scope="module")

@@ -3,7 +3,7 @@
     _crawl/pages.jsonl         one line per fetched page (a later line for the same URL wins)
     _crawl/html/<key>.html     rendered HTML
     _crawl/md/<key>.md         page Markdown, readable straight away
-    _crawl/shots/<key>.png     desktop screenshot
+    _crawl/shots/<key>.webp    desktop screenshot
     _crawl/meta.json           start URL and crawl root
 
 `--resume` reads this back and carries on where the crawl stopped. When the kit is written

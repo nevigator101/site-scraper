@@ -242,7 +242,8 @@ def write_pages(out: Path, site: dict) -> None:
         shot = Path(record["screenshot_file"]) if record["screenshot_file"] else None
         if shot and shot.exists():
             shots_dir.mkdir(parents=True, exist_ok=True)
-            shutil.move(shot, shots_dir / f"{slug}-desktop.png")
+            # .webp; a crawl resumed from an older version may still have .png spools
+            shutil.move(shot, shots_dir / f"{slug}-desktop{shot.suffix}")
 
 
 def write_data(out: Path, site: dict, assets: list[Asset], brand: dict, options: dict) -> None:

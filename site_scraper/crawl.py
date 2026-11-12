@@ -30,7 +30,7 @@ from site_scraper.checkpoint import FIELDS, Checkpoint
 from site_scraper.discover import Robots
 from site_scraper.extract import documents, internal_links, soup_of
 from site_scraper.guard import HostPolicy
-from site_scraper.shots import capped_screenshot
+from site_scraper.shots import to_webp, webp_screenshot
 from site_scraper.urls import dedupe_key, is_crawlable, normalize, same_site, site_key
 
 log = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class Page:
     html: str = ""
     markdown: str = ""
     raw_markdown: str = ""
-    screenshot_file: str = ""  # PNG in CrawlOptions.spool_dir, moved into the kit at the end
+    screenshot_file: str = ""  # WebP in CrawlOptions.spool_dir, moved into the kit at the end
     headers: dict = field(default_factory=dict)
 
 
@@ -361,9 +361,7 @@ async def _start_crawler(
         async def shoot(page, **_kwargs):
             # Runs after the HTML is captured, so the saved HTML is untouched.
             try:
-                shots[normalize(page.url) or page.url] = await capped_screenshot(
-                    page, type="png", timeout=30_000
-                )
+                shots[normalize(page.url) or page.url] = await webp_screenshot(page, timeout=30_000)
             except Exception as exc:  # noqa: BLE001 - a missing screenshot must not fail the page
                 log.warning("screenshot failed for %s: %s", page.url, exc)
             return page
@@ -419,8 +417,13 @@ def _fill(page: Page, result, spool: Path | None = None, shot: bytes | None = No
     if page.ok:
         page.html = html
         page.markdown, page.raw_markdown = _markdown_of(result)
-        shot = shot or _screenshot_of(result)
+        if not shot and spool is not None and (fallback := _screenshot_of(result)):
+            # Crawl4AI's own screenshot is PNG; the hook's is already WebP.
+            try:
+                shot = to_webp(fallback)
+            except Exception as exc:  # noqa: BLE001 - a bad screenshot must not fail the page
+                log.warning("screenshot conversion failed for %s: %s", page.url, exc)
         if shot and spool is not None:
-            target = spool / f"{hashlib.sha256(page.url.encode()).hexdigest()[:24]}.png"
+            target = spool / f"{hashlib.sha256(page.url.encode()).hexdigest()[:24]}.webp"
             target.write_bytes(shot)
             page.screenshot_file = str(target)

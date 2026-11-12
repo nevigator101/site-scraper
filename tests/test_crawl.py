@@ -1,7 +1,16 @@
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
+from PIL import Image
+
 from site_scraper.crawl import Page, _fill, _retryable
+
+
+def _png() -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (40, 30), (97, 206, 112)).save(out, "PNG")
+    return out.getvalue()
 
 
 def _result(**kw):
@@ -13,18 +22,33 @@ def _result(**kw):
         redirected_url=None,
         response_headers={},
         markdown=None,
-        screenshot=b"\x89PNG",
+        screenshot=_png(),
     )
     return SimpleNamespace(**{**base, **kw})
 
 
-def test_screenshot_is_spooled_to_disk_not_kept_in_memory(tmp_path):
+def test_screenshot_is_spooled_to_disk_as_webp_not_kept_in_memory(tmp_path):
     page = Page("https://example.co.za/a/", 0, None, "start")
     _fill(page, _result(), tmp_path)
     assert page.ok
     assert page.screenshot_file.startswith(str(tmp_path))
-    assert Path(page.screenshot_file).read_bytes() == b"\x89PNG"
+    assert page.screenshot_file.endswith(".webp")
+    with Image.open(page.screenshot_file) as im:
+        assert (im.format, im.size) == ("WEBP", (40, 30))
     assert not hasattr(page, "screenshot")
+
+
+def test_hook_screenshot_is_spooled_as_given(tmp_path):
+    page = Page("https://example.co.za/b/", 0, None, "start")
+    _fill(page, _result(screenshot=None), tmp_path, shot=b"RIFF....WEBP")
+    assert Path(page.screenshot_file).read_bytes() == b"RIFF....WEBP"
+
+
+def test_unreadable_screenshot_is_skipped_not_fatal(tmp_path):
+    page = Page("https://example.co.za/c/", 0, None, "start")
+    _fill(page, _result(screenshot=b"\x89PNG"), tmp_path)
+    assert page.ok
+    assert page.screenshot_file == ""
 
 
 def test_browser_failures_and_5xx_are_retried_but_4xx_are_not():

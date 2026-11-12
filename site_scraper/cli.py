@@ -174,7 +174,7 @@ async def run(args: argparse.Namespace) -> Path:
             shots = {}
             if not args.no_screenshots:
                 for record in shot_records:
-                    target = out / "screenshots" / f"{record['slug']}-mobile.png"
+                    target = out / "screenshots" / f"{record['slug']}-mobile.webp"
                     shots.setdefault(record["final_url"], target)
                     if len(shots) >= MOBILE_SHOT_LIMIT:
                         break
